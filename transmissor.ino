@@ -44,6 +44,7 @@ void dormir() {
 }
 
 void setup() {
+  setCpuFrequencyMhz(80);
   Serial.begin(115200);
   delay(200);
 
