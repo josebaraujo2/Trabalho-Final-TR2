@@ -52,16 +52,27 @@ class MonitoringDatabase:
         conn.close()
         print(f"✓ Leitura armazenada: {sensor_id} - T:{temperatura}°C U:{umidade}% P:{poeira}µg/m³")
     
-    def obter_ultimas_leituras(self, limite=20):
-        """Retorna as últimas N leituras"""
+    def obter_ultimas_leituras(self, limite=20, sensor_id=None):
+        """Retorna as últimas N leituras, opcionalmente filtradas por sensor_id"""
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
-        cursor.execute('''
-            SELECT timestamp, sensor_id, temperatura, umidade, poeira
-            FROM leituras
-            ORDER BY id DESC
-            LIMIT ?
-        ''', (limite,))
+        
+        if sensor_id and sensor_id != 'TODOS':
+            cursor.execute('''
+                SELECT timestamp, sensor_id, temperatura, umidade, poeira
+                FROM leituras
+                WHERE sensor_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+            ''', (sensor_id, limite))
+        else:
+            cursor.execute('''
+                SELECT timestamp, sensor_id, temperatura, umidade, poeira
+                FROM leituras
+                ORDER BY id DESC
+                LIMIT ?
+            ''', (limite,))
+        
         resultados = cursor.fetchall()
         conn.close()
         
@@ -79,6 +90,10 @@ class MonitoringDatabase:
 # Instância global do banco de dados
 db = MonitoringDatabase(DB_FILE)
 
+class ReusableTCPServer(socketserver.TCPServer):
+    """TCPServer que permite reutilizar endereço (resolve problemas no WSL)"""
+    allow_reuse_address = True
+
 class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
     """Handler HTTP para requisições do servidor"""
     
@@ -94,12 +109,19 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
             html = self.gerar_dashboard()
             self.wfile.write(html.encode())
         
-        # API JSON para obter dados
+        # API JSON para obter dados com parâmetros de limite e sensor_id
         elif parsed_path.path == '/api/leituras':
+            query_params = parse_qs(parsed_path.query)
+            limite = int(query_params.get('limite', [50])[0])
+            sensor_id = query_params.get('sensor_id', [None])[0]
+            
+            # Limita entre 1 e 500 para evitar sobrecarga
+            limite = max(1, min(limite, 500))
+            
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
-            leituras = db.obter_ultimas_leituras(20)
+            leituras = db.obter_ultimas_leituras(limite, sensor_id)
             self.wfile.write(json.dumps(leituras, indent=2).encode())
         
         else:
@@ -137,178 +159,185 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
     
     def gerar_dashboard(self):
         """Gera HTML do dashboard com gráficos"""
-        leituras = db.obter_ultimas_leituras(50)  # Aumentado para 50 para gráficos melhores
-        
-        # Prepara dados para os gráficos
-        if leituras:
-            # Inverte para ordem cronológica
-            leituras_ordenadas = list(reversed(leituras))
-            
-            # Extrai dados para gráficos
-            timestamps = [l['timestamp'][11:19] for l in leituras_ordenadas]  # Apenas hora
-            temperaturas = [l['temperatura'] for l in leituras_ordenadas]
-            umidades = [l['umidade'] for l in leituras_ordenadas]
-            poeiras = [l['poeira'] for l in leituras_ordenadas]
-            
-            # Calcula estatísticas
-            temp_media = sum(temperaturas) / len(temperaturas)
-            temp_min = min(temperaturas)
-            temp_max = max(temperaturas)
-            
-            umid_media = sum(umidades) / len(umidades)
-            umid_min = min(umidades)
-            umid_max = max(umidades)
-            
-            poeira_media = sum(poeiras) / len(poeiras)
-            poeira_min = min(poeiras)
-            poeira_max = max(poeiras)
-        else:
-            timestamps = []
-            temperaturas = []
-            umidades = []
-            poeiras = []
-            temp_media = temp_min = temp_max = 0
-            umid_media = umid_min = umid_max = 0
-            poeira_media = poeira_min = poeira_max = 0
-        
-        # Prepara dados para JavaScript
-        import json
-        dados_js = json.dumps({
-            'timestamps': timestamps,
-            'temperaturas': temperaturas,
-            'umidades': umidades,
-            'poeiras': poeiras
-        })
-        
-        # Tabela com últimas 10 leituras
-        linhas_tabela = ""
-        for leitura in leituras[:10]:
-            linhas_tabela += f"""
-            <tr>
-                <td>{leitura['timestamp'][:19]}</td>
-                <td>{leitura['sensor_id']}</td>
-                <td>{leitura['temperatura']:.1f} °C</td>
-                <td>{leitura['umidade']:.1f} %</td>
-                <td>{leitura['poeira']:.1f} µg/m³</td>
-            </tr>
-            """
-        
-        html = f"""
+        html = """
         <!DOCTYPE html>
         <html>
         <head>
             <meta charset="UTF-8">
-            <meta http-equiv="refresh" content="10">
             <title>Dashboard - Monitoramento Ambiental</title>
             <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
             <style>
-                * {{
+                * {
                     margin: 0;
                     padding: 0;
                     box-sizing: border-box;
-                }}
-                body {{
+                }
+                body {
                     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
                     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                     padding: 20px;
                     min-height: 100vh;
-                }}
-                .header {{
+                }
+                .header {
                     text-align: center;
                     color: white;
                     margin-bottom: 30px;
-                }}
-                .header h1 {{
+                }
+                .header h1 {
                     font-size: 32px;
                     font-weight: 600;
                     margin-bottom: 5px;
-                }}
-                .header p {{
+                }
+                .header p {
                     font-size: 14px;
                     opacity: 0.9;
-                }}
-                .container {{
+                }
+                .container {
                     max-width: 1400px;
                     margin: 0 auto;
-                }}
-                .metrics-grid {{
+                }
+                .control-panel {
+                    background: white;
+                    border-radius: 12px;
+                    padding: 20px;
+                    margin-bottom: 20px;
+                    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                    display: flex;
+                    align-items: center;
+                    gap: 15px;
+                    flex-wrap: wrap;
+                }
+                .control-panel label {
+                    font-weight: 600;
+                    color: #333;
+                    font-size: 14px;
+                }
+                .control-panel input,
+                .control-panel select {
+                    padding: 10px 15px;
+                    border: 2px solid #e0e0e0;
+                    border-radius: 8px;
+                    font-size: 14px;
+                    transition: border-color 0.3s;
+                }
+                .control-panel input {
+                    width: 120px;
+                }
+                .control-panel select {
+                    width: 200px;
+                    cursor: pointer;
+                }
+                .control-panel input:focus,
+                .control-panel select:focus {
+                    outline: none;
+                    border-color: #667eea;
+                }
+                .control-panel button {
+                    padding: 10px 25px;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    font-size: 14px;
+                    font-weight: 600;
+                    cursor: pointer;
+                    transition: transform 0.2s, box-shadow 0.2s;
+                }
+                .control-panel button:hover {
+                    transform: translateY(-2px);
+                    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+                }
+                .control-panel button:active {
+                    transform: translateY(0);
+                }
+                .control-panel .auto-refresh {
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    margin-left: auto;
+                }
+                .control-panel .auto-refresh input[type="checkbox"] {
+                    width: auto;
+                    cursor: pointer;
+                }
+                .metrics-grid {
                     display: grid;
                     grid-template-columns: repeat(3, 1fr);
                     gap: 20px;
                     margin-bottom: 30px;
-                }}
-                .metric-card {{
+                }
+                .metric-card {
                     background: white;
                     border-radius: 12px;
                     padding: 20px;
                     box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-                }}
-                .metric-card h3 {{
+                }
+                .metric-card h3 {
                     color: #333;
                     font-size: 14px;
                     font-weight: 600;
                     margin-bottom: 15px;
                     text-transform: uppercase;
                     letter-spacing: 0.5px;
-                }}
-                .metric-stats {{
+                }
+                .metric-stats {
                     display: flex;
                     justify-content: space-between;
                     margin-bottom: 10px;
-                }}
-                .metric-stats div {{
+                }
+                .metric-stats div {
                     text-align: center;
-                }}
-                .metric-stats label {{
+                }
+                .metric-stats label {
                     display: block;
                     font-size: 11px;
                     color: #888;
                     margin-bottom: 5px;
-                }}
-                .metric-stats span {{
+                }
+                .metric-stats span {
                     font-size: 18px;
                     font-weight: 600;
                     color: #333;
-                }}
-                .graphs-grid {{
+                }
+                .graphs-grid {
                     display: grid;
                     grid-template-columns: repeat(3, 1fr);
                     gap: 20px;
                     margin-bottom: 30px;
-                }}
-                .graph-card {{
+                }
+                .graph-card {
                     background: white;
                     border-radius: 12px;
                     padding: 25px;
                     box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-                }}
-                .graph-card h3 {{
+                }
+                .graph-card h3 {
                     color: #333;
                     font-size: 16px;
                     font-weight: 600;
                     margin-bottom: 20px;
-                }}
-                .chart-container {{
+                }
+                .chart-container {
                     position: relative;
                     height: 250px;
-                }}
-                .table-card {{
+                }
+                .table-card {
                     background: white;
                     border-radius: 12px;
                     padding: 25px;
                     box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-                }}
-                .table-card h3 {{
+                }
+                .table-card h3 {
                     color: #333;
                     font-size: 18px;
                     font-weight: 600;
                     margin-bottom: 20px;
-                }}
-                table {{
+                }
+                table {
                     width: 100%;
                     border-collapse: collapse;
-                }}
-                th {{
+                }
+                th {
                     background-color: #f8f9fa;
                     padding: 12px;
                     text-align: left;
@@ -318,32 +347,63 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
                     text-transform: uppercase;
                     letter-spacing: 0.5px;
                     border-bottom: 2px solid #e9ecef;
-                }}
-                td {{
+                }
+                td {
                     padding: 12px;
                     border-bottom: 1px solid #e9ecef;
                     font-size: 14px;
                     color: #333;
-                }}
-                tr:hover {{
+                }
+                tr:hover {
                     background-color: #f8f9fa;
-                }}
-                .footer {{
+                }
+                .footer {
                     text-align: center;
                     color: white;
                     margin-top: 30px;
                     font-size: 13px;
                     opacity: 0.9;
-                }}
+                }
+                .loading {
+                    display: none;
+                    color: #667eea;
+                    font-size: 14px;
+                    font-weight: 600;
+                }
+                .loading.active {
+                    display: inline-block;
+                }
             </style>
         </head>
         <body>
             <div class="header">
                 <h1>Sistema de Monitoramento Ambiental</h1>
-                <p>CIC0236 - Teleinformática e Redes 2 | Atualização automática a cada 10 segundos</p>
+                <p>CIC0236 - Teleinformática e Redes 2</p>
             </div>
             
             <div class="container">
+                <!-- Painel de Controle -->
+                <div class="control-panel">
+                    <label for="sensorSelect">Sensor:</label>
+                    <select id="sensorSelect">
+                        <option value="TODOS">Todos os Sensores</option>
+                        <option value="SALA_SERVIDORES_01">Sala Servidores 01</option>
+                        <option value="SALA_SERVIDORES_02">Sala Servidores 02</option>
+                        <option value="LABORATORIO_REDES">Laboratório de Redes</option>
+                    </select>
+                    
+                    <label for="numLeituras">Número de leituras:</label>
+                    <input type="number" id="numLeituras" value="50" min="1" max="500">
+                    
+                    <button onclick="atualizarDados()">Atualizar</button>
+                    <span class="loading" id="loading">Carregando...</span>
+                    
+                    <div class="auto-refresh">
+                        <input type="checkbox" id="autoRefresh" checked>
+                        <label for="autoRefresh">Atualização automática (10s)</label>
+                    </div>
+                </div>
+                
                 <!-- Cards de Métricas -->
                 <div class="metrics-grid">
                     <div class="metric-card">
@@ -351,15 +411,15 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
                         <div class="metric-stats">
                             <div>
                                 <label>Mínima</label>
-                                <span>{temp_min:.1f}°C</span>
+                                <span id="tempMin">--</span>
                             </div>
                             <div>
                                 <label>Média</label>
-                                <span style="font-size: 24px; color: #667eea;">{temp_media:.1f}°C</span>
+                                <span style="font-size: 24px; color: #667eea;" id="tempMedia">--</span>
                             </div>
                             <div>
                                 <label>Máxima</label>
-                                <span>{temp_max:.1f}°C</span>
+                                <span id="tempMax">--</span>
                             </div>
                         </div>
                     </div>
@@ -369,15 +429,15 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
                         <div class="metric-stats">
                             <div>
                                 <label>Mínima</label>
-                                <span>{umid_min:.1f}%</span>
+                                <span id="umidMin">--</span>
                             </div>
                             <div>
                                 <label>Média</label>
-                                <span style="font-size: 24px; color: #667eea;">{umid_media:.1f}%</span>
+                                <span style="font-size: 24px; color: #667eea;" id="umidMedia">--</span>
                             </div>
                             <div>
                                 <label>Máxima</label>
-                                <span>{umid_max:.1f}%</span>
+                                <span id="umidMax">--</span>
                             </div>
                         </div>
                     </div>
@@ -387,15 +447,15 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
                         <div class="metric-stats">
                             <div>
                                 <label>Mínima</label>
-                                <span>{poeira_min:.1f}</span>
+                                <span id="poeiraMin">--</span>
                             </div>
                             <div>
                                 <label>Média</label>
-                                <span style="font-size: 24px; color: #667eea;">{poeira_media:.1f}</span>
+                                <span style="font-size: 24px; color: #667eea;" id="poeiraMedia">--</span>
                             </div>
                             <div>
                                 <label>Máxima</label>
-                                <span>{poeira_max:.1f}</span>
+                                <span id="poeiraMax">--</span>
                             </div>
                         </div>
                         <p style="font-size: 11px; color: #888; margin-top: 10px; text-align: center;">µg/m³</p>
@@ -439,101 +499,223 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
                                 <th>Poeira</th>
                             </tr>
                         </thead>
-                        <tbody>
-                            {linhas_tabela if linhas_tabela else '<tr><td colspan="5" style="text-align:center; color: #999;">Aguardando dados dos sensores...</td></tr>'}
+                        <tbody id="tabelaLeituras">
+                            <tr><td colspan="5" style="text-align:center; color: #999;">Carregando dados...</td></tr>
                         </tbody>
                     </table>
                 </div>
                 
                 <div class="footer">
-                    <p>Total de leituras armazenadas: {len(leituras)} | Sistema operacional</p>
+                    <p>Total de leituras exibidas: <span id="totalLeituras">0</span> | Sistema operacional</p>
                 </div>
             </div>
             
             <script>
-                const dados = {dados_js};
+                let chartTemp, chartUmid, chartPoeira;
+                let autoRefreshInterval;
                 
                 // Configuração comum dos gráficos
-                const commonOptions = {{
+                const commonOptions = {
                     responsive: true,
                     maintainAspectRatio: false,
-                    plugins: {{
-                        legend: {{
+                    plugins: {
+                        legend: {
                             display: false
-                        }}
-                    }},
-                    scales: {{
-                        x: {{
+                        }
+                    },
+                    scales: {
+                        x: {
                             display: true,
-                            grid: {{
+                            grid: {
                                 display: false
-                            }},
-                            ticks: {{
+                            },
+                            ticks: {
                                 maxTicksLimit: 8
-                            }}
-                        }},
-                        y: {{
+                            }
+                        },
+                        y: {
                             display: true,
-                            grid: {{
+                            grid: {
                                 color: '#f0f0f0'
-                            }}
-                        }}
-                    }}
-                }};
+                            }
+                        }
+                    }
+                };
                 
-                // Gráfico de Temperatura
-                new Chart(document.getElementById('chartTemp'), {{
-                    type: 'line',
-                    data: {{
-                        labels: dados.timestamps,
-                        datasets: [{{
-                            label: 'Temperatura',
-                            data: dados.temperaturas,
-                            borderColor: '#ff6b6b',
-                            backgroundColor: 'rgba(255, 107, 107, 0.1)',
-                            borderWidth: 2,
-                            tension: 0.4,
-                            fill: true
-                        }}]
-                    }},
-                    options: commonOptions
-                }});
+                // Inicializa os gráficos
+                function inicializarGraficos() {
+                    chartTemp = new Chart(document.getElementById('chartTemp'), {
+                        type: 'line',
+                        data: {
+                            labels: [],
+                            datasets: [{
+                                label: 'Temperatura',
+                                data: [],
+                                borderColor: '#ff6b6b',
+                                backgroundColor: 'rgba(255, 107, 107, 0.1)',
+                                borderWidth: 2,
+                                tension: 0.4,
+                                fill: true
+                            }]
+                        },
+                        options: commonOptions
+                    });
+                    
+                    chartUmid = new Chart(document.getElementById('chartUmid'), {
+                        type: 'line',
+                        data: {
+                            labels: [],
+                            datasets: [{
+                                label: 'Umidade',
+                                data: [],
+                                borderColor: '#4ecdc4',
+                                backgroundColor: 'rgba(78, 205, 196, 0.1)',
+                                borderWidth: 2,
+                                tension: 0.4,
+                                fill: true
+                            }]
+                        },
+                        options: commonOptions
+                    });
+                    
+                    chartPoeira = new Chart(document.getElementById('chartPoeira'), {
+                        type: 'line',
+                        data: {
+                            labels: [],
+                            datasets: [{
+                                label: 'Poeira',
+                                data: [],
+                                borderColor: '#95e1d3',
+                                backgroundColor: 'rgba(149, 225, 211, 0.1)',
+                                borderWidth: 2,
+                                tension: 0.4,
+                                fill: true
+                            }]
+                        },
+                        options: commonOptions
+                    });
+                }
                 
-                // Gráfico de Umidade
-                new Chart(document.getElementById('chartUmid'), {{
-                    type: 'line',
-                    data: {{
-                        labels: dados.timestamps,
-                        datasets: [{{
-                            label: 'Umidade',
-                            data: dados.umidades,
-                            borderColor: '#4ecdc4',
-                            backgroundColor: 'rgba(78, 205, 196, 0.1)',
-                            borderWidth: 2,
-                            tension: 0.4,
-                            fill: true
-                        }}]
-                    }},
-                    options: commonOptions
-                }});
+                // Atualiza os dados do dashboard
+                async function atualizarDados() {
+                    const numLeituras = document.getElementById('numLeituras').value;
+                    const sensorId = document.getElementById('sensorSelect').value;
+                    const loading = document.getElementById('loading');
+                    
+                    loading.classList.add('active');
+                    
+                    try {
+                        let url = `/api/leituras?limite=${numLeituras}`;
+                        if (sensorId !== 'TODOS') {
+                            url += `&sensor_id=${sensorId}`;
+                        }
+                        
+                        const response = await fetch(url);
+                        const leituras = await response.json();
+                        
+                        if (leituras.length === 0) {
+                            document.getElementById('tabelaLeituras').innerHTML = 
+                                '<tr><td colspan="5" style="text-align:center; color: #999;">Aguardando dados dos sensores...</td></tr>';
+                            return;
+                        }
+                        
+                        // Inverte para ordem cronológica
+                        const leiturasOrdenadas = leituras.reverse();
+                        
+                        // Extrai dados
+                        const timestamps = leiturasOrdenadas.map(l => l.timestamp.substring(11, 19));
+                        const temperaturas = leiturasOrdenadas.map(l => l.temperatura);
+                        const umidades = leiturasOrdenadas.map(l => l.umidade);
+                        const poeiras = leiturasOrdenadas.map(l => l.poeira);
+                        
+                        // Calcula estatísticas
+                        const tempMedia = (temperaturas.reduce((a, b) => a + b, 0) / temperaturas.length).toFixed(1);
+                        const tempMin = Math.min(...temperaturas).toFixed(1);
+                        const tempMax = Math.max(...temperaturas).toFixed(1);
+                        
+                        const umidMedia = (umidades.reduce((a, b) => a + b, 0) / umidades.length).toFixed(1);
+                        const umidMin = Math.min(...umidades).toFixed(1);
+                        const umidMax = Math.max(...umidades).toFixed(1);
+                        
+                        const poeiraMedia = (poeiras.reduce((a, b) => a + b, 0) / poeiras.length).toFixed(1);
+                        const poeiraMin = Math.min(...poeiras).toFixed(1);
+                        const poeiraMax = Math.max(...poeiras).toFixed(1);
+                        
+                        // Atualiza métricas
+                        document.getElementById('tempMin').textContent = tempMin + '°C';
+                        document.getElementById('tempMedia').textContent = tempMedia + '°C';
+                        document.getElementById('tempMax').textContent = tempMax + '°C';
+                        
+                        document.getElementById('umidMin').textContent = umidMin + '%';
+                        document.getElementById('umidMedia').textContent = umidMedia + '%';
+                        document.getElementById('umidMax').textContent = umidMax + '%';
+                        
+                        document.getElementById('poeiraMin').textContent = poeiraMin;
+                        document.getElementById('poeiraMedia').textContent = poeiraMedia;
+                        document.getElementById('poeiraMax').textContent = poeiraMax;
+                        
+                        // Atualiza gráficos
+                        chartTemp.data.labels = timestamps;
+                        chartTemp.data.datasets[0].data = temperaturas;
+                        chartTemp.update();
+                        
+                        chartUmid.data.labels = timestamps;
+                        chartUmid.data.datasets[0].data = umidades;
+                        chartUmid.update();
+                        
+                        chartPoeira.data.labels = timestamps;
+                        chartPoeira.data.datasets[0].data = poeiras;
+                        chartPoeira.update();
+                        
+                        // Atualiza tabela (primeiras 10)
+                        const tbody = document.getElementById('tabelaLeituras');
+                        tbody.innerHTML = '';
+                        leituras.reverse().slice(0, 10).forEach(leitura => {
+                            const row = `
+                                <tr>
+                                    <td>${leitura.timestamp.substring(0, 19)}</td>
+                                    <td>${leitura.sensor_id}</td>
+                                    <td>${leitura.temperatura.toFixed(1)} °C</td>
+                                    <td>${leitura.umidade.toFixed(1)} %</td>
+                                    <td>${leitura.poeira.toFixed(1)} µg/m³</td>
+                                </tr>
+                            `;
+                            tbody.innerHTML += row;
+                        });
+                        
+                        document.getElementById('totalLeituras').textContent = leituras.length;
+                        
+                    } catch (error) {
+                        console.error('Erro ao carregar dados:', error);
+                    } finally {
+                        loading.classList.remove('active');
+                    }
+                }
                 
-                // Gráfico de Poeira
-                new Chart(document.getElementById('chartPoeira'), {{
-                    type: 'line',
-                    data: {{
-                        labels: dados.timestamps,
-                        datasets: [{{
-                            label: 'Poeira',
-                            data: dados.poeiras,
-                            borderColor: '#95e1d3',
-                            backgroundColor: 'rgba(149, 225, 211, 0.1)',
-                            borderWidth: 2,
-                            tension: 0.4,
-                            fill: true
-                        }}]
-                    }},
-                    options: commonOptions
-                }});
+                // Configurar atualização automática
+                function configurarAutoRefresh() {
+                    if (autoRefreshInterval) {
+                        clearInterval(autoRefreshInterval);
+                    }
+                    
+                    if (document.getElementById('autoRefresh').checked) {
+                        autoRefreshInterval = setInterval(atualizarDados, 10000);
+                    }
+                }
+                
+                // Event listeners
+                document.getElementById('autoRefresh').addEventListener('change', configurarAutoRefresh);
+                document.getElementById('sensorSelect').addEventListener('change', atualizarDados);
+                document.getElementById('numLeituras').addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        atualizarDados();
+                    }
+                });
+                
+                // Inicialização
+                inicializarGraficos();
+                atualizarDados();
+                configurarAutoRefresh();
             </script>
         </body>
         </html>
@@ -546,7 +728,7 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
 
 def iniciar_servidor():
     """Inicia o servidor HTTP"""
-    with socketserver.TCPServer(("", PORT), MonitoringHandler) as httpd:
+    with ReusableTCPServer(("", PORT), MonitoringHandler) as httpd:
         print("="*60)
         print(" SERVIDOR DE MONITORAMENTO INICIADO")
         print("="*60)
