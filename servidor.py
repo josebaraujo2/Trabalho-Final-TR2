@@ -158,7 +158,7 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
             self.send_error(404)
     
     def gerar_dashboard(self):
-        """Gera HTML do dashboard com gráficos"""
+        """Gera HTML do dashboard com gráficos, timeframe selector e alertas"""
         html = """
         <!DOCTYPE html>
         <html>
@@ -196,6 +196,44 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
                     max-width: 1400px;
                     margin: 0 auto;
                 }
+                
+                .timeframe-selector {
+                    background: white;
+                    border-radius: 12px;
+                    padding: 15px 20px;
+                    margin-bottom: 20px;
+                    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                }
+                .timeframe-selector label {
+                    font-weight: 600;
+                    color: #333;
+                    font-size: 14px;
+                    margin-right: 10px;
+                }
+                .timeframe-btn {
+                    padding: 8px 20px;
+                    border: 2px solid #e0e0e0;
+                    background: white;
+                    border-radius: 8px;
+                    font-size: 13px;
+                    font-weight: 600;
+                    cursor: pointer;
+                    transition: all 0.3s;
+                    color: #666;
+                }
+                .timeframe-btn:hover {
+                    border-color: #667eea;
+                    color: #667eea;
+                }
+                .timeframe-btn.active {
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                    border-color: transparent;
+                }
+                
                 .control-panel {
                     background: white;
                     border-radius: 12px;
@@ -266,12 +304,75 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
                     gap: 20px;
                     margin-bottom: 30px;
                 }
+                
                 .metric-card {
                     background: white;
                     border-radius: 12px;
                     padding: 20px;
                     box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                    transition: all 0.3s;
+                    position: relative;
+                    overflow: hidden;
                 }
+                .metric-card::before {
+                    content: '';
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    right: 0;
+                    height: 4px;
+                    background: #667eea;
+                    transition: all 0.3s;
+                }
+                .metric-card.alert-normal::before {
+                    background: #10b981;
+                }
+                .metric-card.alert-warning::before {
+                    background: #f59e0b;
+                    height: 6px;
+                }
+                .metric-card.alert-danger::before {
+                    background: #ef4444;
+                    height: 8px;
+                }
+                .metric-card.alert-warning {
+                    background: #fffbeb;
+                    border: 2px solid #fbbf24;
+                }
+                .metric-card.alert-danger {
+                    background: #fef2f2;
+                    border: 2px solid #ef4444;
+                    animation: pulse 2s infinite;
+                }
+                @keyframes pulse {
+                    0%, 100% { box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+                    50% { box-shadow: 0 4px 20px rgba(239, 68, 68, 0.4); }
+                }
+                
+                .alert-badge {
+                    position: absolute;
+                    top: 15px;
+                    right: 15px;
+                    padding: 4px 10px;
+                    border-radius: 12px;
+                    font-size: 11px;
+                    font-weight: 700;
+                    text-transform: uppercase;
+                    letter-spacing: 0.5px;
+                }
+                .alert-badge.normal {
+                    background: #d1fae5;
+                    color: #065f46;
+                }
+                .alert-badge.warning {
+                    background: #fef3c7;
+                    color: #92400e;
+                }
+                .alert-badge.danger {
+                    background: #fee2e2;
+                    color: #991b1b;
+                }
+                
                 .metric-card h3 {
                     color: #333;
                     font-size: 14px;
@@ -382,6 +483,14 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
             </div>
             
             <div class="container">
+                <div class="timeframe-selector">
+                    <label>📊 Período:</label>
+                    <button class="timeframe-btn active" onclick="setTimeframe(10)">Últimos 10</button>
+                    <button class="timeframe-btn" onclick="setTimeframe(50)">Últimos 50</button>
+                    <button class="timeframe-btn" onclick="setTimeframe(100)">Últimos 100</button>
+                    <button class="timeframe-btn" onclick="setTimeframe(500)">Todos</button>
+                </div>
+                
                 <!-- Painel de Controle -->
                 <div class="control-panel">
                     <label for="sensorSelect">Sensor:</label>
@@ -392,9 +501,6 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
                         <option value="LABORATORIO_REDES">Laboratório de Redes</option>
                     </select>
                     
-                    <label for="numLeituras">Número de leituras:</label>
-                    <input type="number" id="numLeituras" value="50" min="1" max="500">
-                    
                     <button onclick="atualizarDados()">Atualizar</button>
                     <span class="loading" id="loading">Carregando...</span>
                     
@@ -404,10 +510,11 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
                     </div>
                 </div>
                 
-                <!-- Cards de Métricas -->
+                <!-- Cards de Métricas com Alertas -->
                 <div class="metrics-grid">
-                    <div class="metric-card">
-                        <h3>Temperatura</h3>
+                    <div class="metric-card" id="cardTemp">
+                        <span class="alert-badge normal" id="badgeTemp">NORMAL</span>
+                        <h3>🌡️ Temperatura</h3>
                         <div class="metric-stats">
                             <div>
                                 <label>Mínima</label>
@@ -424,8 +531,9 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
                         </div>
                     </div>
                     
-                    <div class="metric-card">
-                        <h3>Umidade</h3>
+                    <div class="metric-card" id="cardUmid">
+                        <span class="alert-badge normal" id="badgeUmid">NORMAL</span>
+                        <h3>💧 Umidade</h3>
                         <div class="metric-stats">
                             <div>
                                 <label>Mínima</label>
@@ -442,8 +550,9 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
                         </div>
                     </div>
                     
-                    <div class="metric-card">
-                        <h3>Concentração de Poeira</h3>
+                    <div class="metric-card" id="cardPoeira">
+                        <span class="alert-badge normal" id="badgePoeira">NORMAL</span>
+                        <h3>💨 Concentração de Poeira</h3>
                         <div class="metric-stats">
                             <div>
                                 <label>Mínima</label>
@@ -512,47 +621,156 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
             
             <script>
                 let chartTemp, chartUmid, chartPoeira;
+                let currentTimeframe = 10;
                 let autoRefreshInterval;
-                
-                // Configuração comum dos gráficos
+
+                const ALERT_THRESHOLDS = {
+                    temperatura: { min: 18, max: 25, warning_min: 20, warning_max: 23 },
+                    umidade: { min: 30, max: 70, warning_min: 35, warning_max: 65 },
+                    poeira: { max: 50, warning_max: 40 }
+                };
+
+                const ALERT_STATE = {
+                    temperatura: { history: [], persist: 0 },
+                    umidade:     { history: [], persist: 0 },
+                    poeira:      { history: [], persist: 0 }
+                };
+
+                const HISTORY_LENGTH = 8;          // quantas médias recentes guardar
+                const PERSISTENCIA_LIMITE = 3;     // quantas leituras seguidas em alerta
+
+                function setTimeframe(num, el) {
+                    currentTimeframe = num;
+
+                    document.querySelectorAll(".timeframe-btn").forEach(btn => {
+                        btn.classList.remove("active");
+                    });
+
+                    if (el) {
+                        el.classList.add("active");
+                    }
+
+                    atualizarDados();
+                }
+
+                // ---- Funções auxiliares de análise ----
+                function registrarValor(tipo, valor) {
+                    const state = ALERT_STATE[tipo];
+                    state.history.push(valor);
+                    if (state.history.length > HISTORY_LENGTH) {
+                        state.history.shift(); // mantém só os últimos N
+                    }
+                }
+
+                function calcularTendencia(tipo) {
+                    const h = ALERT_STATE[tipo].history;
+                    if (h.length < 4) return 0; // pouco dado, ignora
+
+                    let subindo = 0;
+                    for (let i = 1; i < h.length; i++) {
+                        if (h[i] > h[i - 1]) subindo++;
+                    }
+
+                    // se ~70% das médias estão subindo → tendência de alta
+                    return subindo >= Math.floor(h.length * 0.7) ? 1 : 0;
+                }
+
+                function detectarSpike(tipo, multiplicador = 1.3) {
+                    const h = ALERT_STATE[tipo].history;
+                    if (h.length < 2) return false;
+
+                    const penultimo = h[h.length - 2];
+                    const ultimo = h[h.length - 1];
+
+                    // evita divisão por zero / comparação furada
+                    if (penultimo === 0) return false;
+
+                    return ultimo > penultimo * multiplicador;
+                }
+
+                function verificarAlertas(valor, tipo) {
+                    const threshold = ALERT_THRESHOLDS[tipo];
+                    const state = ALERT_STATE[tipo];
+
+                    // registra histórico desta métrica
+                    registrarValor(tipo, valor);
+
+                    // thresholds "hard" e "soft" em cima da média atual
+                    let foraHard, foraSoft;
+
+                    if (tipo === "poeira") {
+                        foraHard = valor > threshold.max;
+                        foraSoft = valor > threshold.warning_max;
+                    } else {
+                        foraHard = valor < threshold.min || valor > threshold.max;
+                        foraSoft = valor < threshold.warning_min || valor > threshold.warning_max;
+                    }
+
+                    // persistência (quantas médias seguidas fora)
+                    if (foraHard || foraSoft) state.persist++;
+                    else state.persist = 0;
+
+                    const persistente = state.persist >= PERSISTENCIA_LIMITE;
+                    const tendenciaAlta = calcularTendencia(tipo);
+                    const spike = detectarSpike(tipo);
+
+                    // score de risco
+                    let risco = 0;
+                    if (foraHard) risco += 3;
+                    if (foraSoft) risco += 1;
+                    if (persistente) risco += 2;
+                    if (tendenciaAlta === 1) risco += 1;
+                    if (spike) risco += 2;
+
+                    if (risco >= 5) return "danger";
+                    if (risco >= 2) return "warning";
+                    return "normal";
+                }
+
+                function atualizarCardAlerta(cardId, badgeId, nivel) {
+                    const card = document.getElementById(cardId);
+                    const badge = document.getElementById(badgeId);
+
+                    card.className = "metric-card alert-" + nivel;
+                    badge.className = "alert-badge " + nivel;
+
+                    const textos = {
+                        normal: "NORMAL",
+                        warning: "⚠️ ATENÇÃO",
+                        danger: "🚨 CRÍTICO"
+                    };
+
+                    badge.textContent = textos[nivel];
+                }
+
+                // Config comum dos gráficos (igual ao seu original bonito)
                 const commonOptions = {
                     responsive: true,
                     maintainAspectRatio: false,
-                    plugins: {
-                        legend: {
-                            display: false
-                        }
-                    },
+                    plugins: { legend: { display: false } },
                     scales: {
                         x: {
                             display: true,
-                            grid: {
-                                display: false
-                            },
-                            ticks: {
-                                maxTicksLimit: 8
-                            }
+                            grid: { display: false },
+                            ticks: { maxTicksLimit: 8 }
                         },
                         y: {
                             display: true,
-                            grid: {
-                                color: '#f0f0f0'
-                            }
+                            grid: { color: "#f0f0f0" }
                         }
                     }
                 };
-                
-                // Inicializa os gráficos
+
                 function inicializarGraficos() {
-                    chartTemp = new Chart(document.getElementById('chartTemp'), {
-                        type: 'line',
+                    chartTemp = new Chart(document.getElementById("chartTemp"), {
+                        type: "line",
                         data: {
                             labels: [],
                             datasets: [{
-                                label: 'Temperatura',
+                                label: "Temperatura",
                                 data: [],
-                                borderColor: '#ff6b6b',
-                                backgroundColor: 'rgba(255, 107, 107, 0.1)',
+                                borderColor: "#ff6b6b",
+                                backgroundColor: "rgba(255, 107, 107, 0.1)",
                                 borderWidth: 2,
                                 tension: 0.4,
                                 fill: true
@@ -560,16 +778,16 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
                         },
                         options: commonOptions
                     });
-                    
-                    chartUmid = new Chart(document.getElementById('chartUmid'), {
-                        type: 'line',
+
+                    chartUmid = new Chart(document.getElementById("chartUmid"), {
+                        type: "line",
                         data: {
                             labels: [],
                             datasets: [{
-                                label: 'Umidade',
+                                label: "Umidade",
                                 data: [],
-                                borderColor: '#4ecdc4',
-                                backgroundColor: 'rgba(78, 205, 196, 0.1)',
+                                borderColor: "#4ecdc4",
+                                backgroundColor: "rgba(78, 205, 196, 0.1)",
                                 borderWidth: 2,
                                 tension: 0.4,
                                 fill: true
@@ -577,16 +795,16 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
                         },
                         options: commonOptions
                     });
-                    
-                    chartPoeira = new Chart(document.getElementById('chartPoeira'), {
-                        type: 'line',
+
+                    chartPoeira = new Chart(document.getElementById("chartPoeira"), {
+                        type: "line",
                         data: {
                             labels: [],
                             datasets: [{
-                                label: 'Poeira',
+                                label: "Poeira",
                                 data: [],
-                                borderColor: '#95e1d3',
-                                backgroundColor: 'rgba(149, 225, 211, 0.1)',
+                                borderColor: "#95e1d3",
+                                backgroundColor: "rgba(149, 225, 211, 0.1)",
                                 borderWidth: 2,
                                 tension: 0.4,
                                 fill: true
@@ -595,124 +813,117 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
                         options: commonOptions
                     });
                 }
-                
-                // Atualiza os dados do dashboard
+
+                // Atualiza dados do dashboard
                 async function atualizarDados() {
-                    const numLeituras = document.getElementById('numLeituras').value;
-                    const sensorId = document.getElementById('sensorSelect').value;
-                    const loading = document.getElementById('loading');
-                    
-                    loading.classList.add('active');
-                    
+                    const sensor = document.getElementById("sensorSelect").value;
+
+                    let url = `/api/leituras?limite=${currentTimeframe}`;
+                    if (sensor !== "TODOS") {
+                        url += `&sensor_id=${sensor}`;
+                    }
+
                     try {
-                        let url = `/api/leituras?limite=${numLeituras}`;
-                        if (sensorId !== 'TODOS') {
-                            url += `&sensor_id=${sensorId}`;
-                        }
-                        
-                        const response = await fetch(url);
-                        const leituras = await response.json();
-                        
-                        if (leituras.length === 0) {
-                            document.getElementById('tabelaLeituras').innerHTML = 
-                                '<tr><td colspan="5" style="text-align:center; color: #999;">Aguardando dados dos sensores...</td></tr>';
+                        const resp = await fetch(url);
+                        const leituras = await resp.json();
+
+                        if (!Array.isArray(leituras) || leituras.length === 0) {
+                            const tbody = document.getElementById("tabelaLeituras");
+                            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:#999;">Aguardando dados...</td></tr>';
                             return;
                         }
-                        
-                        // Inverte para ordem cronológica
-                        const leiturasOrdenadas = leituras.reverse();
-                        
-                        // Extrai dados
-                        const timestamps = leiturasOrdenadas.map(l => l.timestamp.substring(11, 19));
-                        const temperaturas = leiturasOrdenadas.map(l => l.temperatura);
-                        const umidades = leiturasOrdenadas.map(l => l.umidade);
-                        const poeiras = leiturasOrdenadas.map(l => l.poeira);
-                        
-                        // Calcula estatísticas
-                        const tempMedia = (temperaturas.reduce((a, b) => a + b, 0) / temperaturas.length).toFixed(1);
-                        const tempMin = Math.min(...temperaturas).toFixed(1);
-                        const tempMax = Math.max(...temperaturas).toFixed(1);
-                        
-                        const umidMedia = (umidades.reduce((a, b) => a + b, 0) / umidades.length).toFixed(1);
-                        const umidMin = Math.min(...umidades).toFixed(1);
-                        const umidMax = Math.max(...umidades).toFixed(1);
-                        
-                        const poeiraMedia = (poeiras.reduce((a, b) => a + b, 0) / poeiras.length).toFixed(1);
-                        const poeiraMin = Math.min(...poeiras).toFixed(1);
-                        const poeiraMax = Math.max(...poeiras).toFixed(1);
-                        
-                        // Atualiza métricas
-                        document.getElementById('tempMin').textContent = tempMin + '°C';
-                        document.getElementById('tempMedia').textContent = tempMedia + '°C';
-                        document.getElementById('tempMax').textContent = tempMax + '°C';
-                        
-                        document.getElementById('umidMin').textContent = umidMin + '%';
-                        document.getElementById('umidMedia').textContent = umidMedia + '%';
-                        document.getElementById('umidMax').textContent = umidMax + '%';
-                        
-                        document.getElementById('poeiraMin').textContent = poeiraMin;
-                        document.getElementById('poeiraMedia').textContent = poeiraMedia;
-                        document.getElementById('poeiraMax').textContent = poeiraMax;
-                        
-                        // Atualiza gráficos
+
+                        // ordem cronológica
+                        const dados = leituras.slice().reverse();
+
+                        const timestamps = dados.map(l => l.timestamp.substring(11, 19));
+                        const temperaturas = dados.map(l => l.temperatura);
+                        const umidades = dados.map(l => l.umidade);
+                        const poeiras = dados.map(l => l.poeira);
+
+                        // estatísticas
+                        const tempMin = Math.min(...temperaturas);
+                        const tempMax = Math.max(...temperaturas);
+                        const tempMedia = temperaturas.reduce((a, b) => a + b, 0) / temperaturas.length;
+
+                        const umidMin = Math.min(...umidades);
+                        const umidMax = Math.max(...umidades);
+                        const umidMedia = umidades.reduce((a, b) => a + b, 0) / umidades.length;
+
+                        const poeiraMin = Math.min(...poeiras);
+                        const poeiraMax = Math.max(...poeiras);
+                        const poeiraMedia = poeiras.reduce((a, b) => a + b, 0) / poeiras.length;
+
+                        // atualiza cards
+                        document.getElementById("tempMin").textContent = tempMin.toFixed(1);
+                        document.getElementById("tempMedia").textContent = tempMedia.toFixed(1);
+                        document.getElementById("tempMax").textContent = tempMax.toFixed(1);
+
+                        document.getElementById("umidMin").textContent = umidMin.toFixed(1);
+                        document.getElementById("umidMedia").textContent = umidMedia.toFixed(1);
+                        document.getElementById("umidMax").textContent = umidMax.toFixed(1);
+
+                        document.getElementById("poeiraMin").textContent = poeiraMin.toFixed(1);
+                        document.getElementById("poeiraMedia").textContent = poeiraMedia.toFixed(1);
+                        document.getElementById("poeiraMax").textContent = poeiraMax.toFixed(1);
+
+                        // ALERTAS: agora usando a MÉDIA de cada métrica (igual antes)
+                        const alertaTemp = verificarAlertas(tempMedia, "temperatura");
+                        const alertaUmid = verificarAlertas(umidMedia, "umidade");
+                        const alertaPoeira = verificarAlertas(poeiraMedia, "poeira");
+
+                        atualizarCardAlerta("cardTemp", "badgeTemp", alertaTemp);
+                        atualizarCardAlerta("cardUmid", "badgeUmid", alertaUmid);
+                        atualizarCardAlerta("cardPoeira", "badgePoeira", alertaPoeira);
+
+                        // gráficos
                         chartTemp.data.labels = timestamps;
                         chartTemp.data.datasets[0].data = temperaturas;
                         chartTemp.update();
-                        
+
                         chartUmid.data.labels = timestamps;
                         chartUmid.data.datasets[0].data = umidades;
                         chartUmid.update();
-                        
+
                         chartPoeira.data.labels = timestamps;
                         chartPoeira.data.datasets[0].data = poeiras;
                         chartPoeira.update();
-                        
-                        // Atualiza tabela (primeiras 10)
-                        const tbody = document.getElementById('tabelaLeituras');
-                        tbody.innerHTML = '';
-                        leituras.reverse().slice(0, 10).forEach(leitura => {
-                            const row = `
+
+                        // tabela (últimas 10)
+                        const tbody = document.getElementById("tabelaLeituras");
+                        tbody.innerHTML = "";
+
+                        dados.slice(-10).reverse().forEach(l => {
+                            tbody.innerHTML += `
                                 <tr>
-                                    <td>${leitura.timestamp.substring(0, 19)}</td>
-                                    <td>${leitura.sensor_id}</td>
-                                    <td>${leitura.temperatura.toFixed(1)} °C</td>
-                                    <td>${leitura.umidade.toFixed(1)} %</td>
-                                    <td>${leitura.poeira.toFixed(1)} µg/m³</td>
+                                    <td>${l.timestamp.substring(0, 19)}</td>
+                                    <td>${l.sensor_id}</td>
+                                    <td>${l.temperatura.toFixed(1)} °C</td>
+                                    <td>${l.umidade.toFixed(1)} %</td>
+                                    <td>${l.poeira.toFixed(1)} µg/m³</td>
                                 </tr>
                             `;
-                            tbody.innerHTML += row;
                         });
-                        
-                        document.getElementById('totalLeituras').textContent = leituras.length;
-                        
-                    } catch (error) {
-                        console.error('Erro ao carregar dados:', error);
-                    } finally {
-                        loading.classList.remove('active');
+
+                    } catch (e) {
+                        console.error("Erro ao carregar dados:", e);
                     }
                 }
-                
-                // Configurar atualização automática
+
+                // auto refresh
                 function configurarAutoRefresh() {
                     if (autoRefreshInterval) {
                         clearInterval(autoRefreshInterval);
                     }
-                    
-                    if (document.getElementById('autoRefresh').checked) {
+
+                    if (document.getElementById("autoRefresh").checked) {
                         autoRefreshInterval = setInterval(atualizarDados, 10000);
                     }
                 }
-                
-                // Event listeners
-                document.getElementById('autoRefresh').addEventListener('change', configurarAutoRefresh);
-                document.getElementById('sensorSelect').addEventListener('change', atualizarDados);
-                document.getElementById('numLeituras').addEventListener('keypress', (e) => {
-                    if (e.key === 'Enter') {
-                        atualizarDados();
-                    }
-                });
-                
-                // Inicialização
+
+                document.getElementById("autoRefresh").addEventListener("change", configurarAutoRefresh);
+                document.getElementById("sensorSelect").addEventListener("change", atualizarDados);
+
                 inicializarGraficos();
                 atualizarDados();
                 configurarAutoRefresh();
