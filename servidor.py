@@ -743,7 +743,7 @@ class MonitoringHandler(http.server.SimpleHTTPRequestHandler):
                     badge.textContent = textos[nivel];
                 }
 
-                // Config comum dos gráficos (igual ao seu original bonito)
+                // Config comum dos gráficos 
                 const commonOptions = {
                     responsive: true,
                     maintainAspectRatio: false,
